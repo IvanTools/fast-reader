@@ -14,9 +14,9 @@ Speed-read any text one word at a time. Words flash in the center of the screen 
 - Remembers your settings and where you stopped
 
 ## Run it
-It's a single static file. Open `fast-reader/index.html` in a browser, or host the `fast-reader/` folder anywhere that serves static files.
+It's a single static file. Use it on GitHub Pages at https://ivantools.github.io/fast-reader/, open `index.html` in a browser, or host it anywhere that serves static files.
 
-Pulling text from a link needs a small server endpoint at `/api/fetch?url=…` that fetches the page and returns its HTML (browsers block cross-site fetches). Without one, pasting text works as normal.
+Pulling text from a link needs a small server endpoint at `/api/fetch?url=…` that fetches the page and returns its HTML (browsers block cross-site fetches). Where there isn't one, the link box is hidden and pasting works as normal.
 
 ## Keyboard
 Space play/pause · ←/→ 10 words · Shift+←/→ sentence · ↑/↓ speed · Home restart
