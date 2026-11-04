@@ -29,6 +29,7 @@
     font: inherit; color: var(--fg); background: var(--panel);
     border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px;
   }
+  select option, select optgroup { background-color: var(--bg); color: var(--fg); }
   button { cursor: pointer; user-select: none; }
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
@@ -472,6 +473,9 @@
     const r = document.documentElement.style;
     r.setProperty('--bg', S.bg); r.setProperty('--fg', S.fg); r.setProperty('--accent', S.ac);
     r.setProperty('--font-size', S.size + 'px');
+    { const m = /^#?([0-9a-f]{6})$/i.exec(S.bg || ''); let dark = true;
+      if (m) { const n = parseInt(m[1], 16); dark = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 140; }
+      r.setProperty('color-scheme', dark ? 'dark' : 'light'); }
     $('wpm').value = S.wpm; $('wpmVal').textContent = S.wpm + ' wpm';
     $('size').value = S.size; $('chunk').value = S.chunk; $('smart').checked = S.smart;
     $('voiceOn').checked = S.voiceOn; $('voiceOn').disabled = !hasVoice; $('voicePick').style.opacity = S.voiceOn ? 1 : .5;
