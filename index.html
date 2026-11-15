@@ -533,6 +533,7 @@
   let sysU = null, sysUnlocked = false;
   function unlockSpeech() {
     if (sysUnlocked || !hasSpeech) return;
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
     try { const u0 = new SpeechSynthesisUtterance(' '); u0.volume = 0; sysUnlocked = true; synth.speak(u0); } catch (e) {}
   }
   ['touchend', 'click', 'keydown'].forEach(t => document.addEventListener(t, unlockSpeech, true));
@@ -541,7 +542,8 @@
     stopVoice();
     // Hand the audio back to the system voice: on iPhone an open Web Audio session can silence speech.
     if (nat.ctx) { try { nat.ctx.close(); } catch (e) {} nat.ctx = null; }
-    try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch (e) {}
+    // 'playback' lets speech sound even with the iPhone's silent switch on (iOS 17+).
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
     const my = gen, N = words.length;
     if (start >= N) { idx = N - 1; pause(); show(); return; }
     // chunk: to end of sentence, 6..40 words
