@@ -88,6 +88,13 @@
     header { padding: 10px 14px; }
     #controls, #mapWrap, #inputView { padding-left: 14px; padding-right: 14px; }
   }
+  #prep { position: absolute; left: 50%; bottom: 10%; transform: translateX(-50%); width: min(320px, 82%); padding: 12px 16px; border-radius: 12px;
+    background: rgba(0,0,0,.72); color: #fff; font: 600 14px/1.3 system-ui, sans-serif; text-align: center; pointer-events: none; z-index: 5; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+  #prep .bar { height: 6px; margin-top: 9px; border-radius: 3px; background: rgba(255,255,255,.22); overflow: hidden; }
+  #prep .bar i { display: block; height: 100%; width: 0; background: var(--accent, #ff5a5f); border-radius: 3px; transition: width .25s; }
+  #prep.indet .bar i { width: 35% !important; animation: prepSlide 1.1s ease-in-out infinite; }
+  @keyframes prepSlide { from { transform: translateX(-110%); } to { transform: translateX(300%); } }
+  #prep small { display: block; margin-top: 6px; font-weight: 400; opacity: .75; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -122,6 +129,7 @@
     <div class="guide top"></div>
     <div id="word"><span class="l"></span><span class="p"></span><span class="r"></span></div>
     <div class="guide bottom"></div>
+    <div id="prep" class="hidden" role="status" aria-live="polite"><span id="prepText">Preparing voice…</span><div class="bar"><i id="prepBar"></i></div><small id="prepSub"></small></div>
   </div>
   <div id="status"></div>
 
@@ -334,7 +342,7 @@
   const natOK = !!(window.Worker && (window.AudioContext || window.webkitAudioContext) && window.WebAssembly);
   const isNat = () => (S.voice || '').startsWith('nat:');
   const hasVoice = hasSpeech || natOK;
-  const nat = { worker: null, ready: false, loading: false, failed: '', pct: 0, ctx: null, pending: new Map(), cache: new Map(), seq: 0, sources: [], plan: [], raf: 0 };
+  const nat = { worker: null, ready: false, loading: false, failed: '', pct: 0, ctx: null, pending: new Map(), cache: new Map(), seq: 0, sources: [], plan: [], raf: 0, waiting: false, until: 0 };
   const natSpeed = () => Math.max(NAT_MIN, Math.min(NAT_MAX, S.wpm / NAT_WPM));
   const voiceRate = () => Math.max(0.5, Math.min(MAX_RATE, S.wpm / VOICE_WPM));
   const voiceActive = () => S.voiceOn && (isNat() ? natOK : hasSpeech);
@@ -377,8 +385,8 @@
     try { nat.worker = new Worker('voice/tts-worker.js'); } catch (e) { nat.failed = String(e.message || e); nat.loading = false; voiceNote(); return null; }
     nat.worker.onmessage = e => {
       const m = e.data;
-      if (m.type === 'progress') { nat.pct = m.pct; if (isNat()) voiceNote(); }
-      else if (m.type === 'ready') { nat.ready = true; nat.loading = false; voiceNote(); }
+      if (m.type === 'progress') { nat.pct = m.pct; if (isNat()) voiceNote(); prepUI(); }
+      else if (m.type === 'ready') { nat.ready = true; nat.loading = false; voiceNote(); prepUI(); }
       else if (m.type === 'audio' || m.type === 'error') {
         const p = m.id != null && nat.pending.get(m.id);
         if (p) { nat.pending.delete(m.id); m.type === 'audio' ? p.resolve(m) : p.reject(new Error(m.message)); }
@@ -421,9 +429,20 @@
     while (nat.cache.size > 16) nat.cache.delete(nat.cache.keys().next().value);
     return p;
   }
+  // "Preparing voice" pop-up: shown while playing but no speech is coming out yet (download, first render, or a render that fell behind).
+  function prepUI() {
+    const show = playing && nat.waiting && isNat() && S.voiceOn;
+    $('prep').classList.toggle('hidden', !show);
+    if (!show) return;
+    const dl = nat.loading && !nat.ready;
+    $('prep').classList.toggle('indet', !dl);
+    $('prepBar').style.width = (dl ? nat.pct : 0) + '%';
+    $('prepText').textContent = dl ? `Preparing voice… ${nat.pct}%` : 'Preparing voice…';
+    $('prepSub').textContent = dl ? 'One-time download, about 30 MB' : 'Playback starts in a moment';
+  }
   function natStop() {
     nat.sources.forEach(src => { try { src.onended = null; src.stop(); } catch (e) {} });
-    nat.sources = []; nat.plan = [];
+    nat.sources = []; nat.plan = []; nat.waiting = false; nat.until = 0; prepUI();
     if (nat.raf) { cancelAnimationFrame(nat.raf); nat.raf = 0; }
   }
   function natFollow(my) {
@@ -432,6 +451,8 @@
       nat.raf = 0;
       if (my !== gen || !nat.ctx) return;
       const t = nat.ctx.currentTime;
+      const starved = !nat.plan.length || (nat.until && t > nat.until + 0.05 && !nat.finished);
+      if (starved !== nat.waiting) { nat.waiting = starved; prepUI(); }
       let c = null;
       for (const x of nat.plan) if (t >= x.start - 0.01) c = x;
       if (c) {
@@ -453,8 +474,9 @@
     idx = start; show();
     let [s, e] = natChunk(start, true);
     let cur = natSynth(s, e), when = 0;
+    nat.waiting = true; nat.finished = false; prepUI();
     natFollow(my);
-    $('status').textContent = nat.ready ? 'Starting the voice…' : 'Getting the voice ready…';
+    $('status').textContent = '';
     try {
       while (my === gen) {
         const res = await cur;
@@ -472,7 +494,9 @@
         nat.sources.push(src); if (nat.sources.length > 4) nat.sources.shift();
         if (playing) $('status').textContent = '';
         when += buf.duration - off;
+        nat.until = when;
         if (!next) {
+          nat.finished = true;
           src.onended = () => { if (my === gen && playing) { idx = N - 1; pause(); show(); } };
           return;
         }
