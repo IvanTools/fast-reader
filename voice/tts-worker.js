@@ -7,7 +7,16 @@ importScripts(BASE + 'ort.wasm.min.js', BASE + 'dizione-core.js', BASE + 'dizion
 const SR = 24000, HOP = 256;
 let session = null, P = null, ready = null;
 
+// Files are kept in the browser's cache storage after the first download, so later visits start offline and instantly.
+const CACHE = 'fast-reader-voice-1';
 async function fetchWithProgress(url, onBytes) {
+  let store = null;
+  try { store = await caches.open(CACHE); const hit = await store.match(url); if (hit) { const b = await hit.arrayBuffer(); if (onBytes) onBytes(b.byteLength); return b; } } catch (e) { store = null; }
+  const buf = await fetchNet(url, onBytes);
+  if (store) store.put(url, new Response(buf.slice(0))).catch(() => {});
+  return buf;
+}
+async function fetchNet(url, onBytes) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Could not load ${url.split('/').pop()} (${r.status})`);
   if (!r.body || !onBytes) return r.arrayBuffer();
