@@ -214,12 +214,14 @@
   let idx = 0;             // current word index
   let playing = false;
   let timer = null;
-  const defaults = { wpm: 350, size: 64, chunk: 1, smart: true, voiceOn: false, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
+  const defaults = { wpm: 250, size: 64, chunk: 1, smart: true, voiceOn: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
   let S = Object.assign({}, defaults);
   try { Object.assign(S, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch (e) {}
   if (!S.natDefault) { if (S.voice === '') S.voice = 'nat:M2'; S.natDefault = 1; }   // one-time switch to the Natural male voice
+  if (!S.v250) { S.wpm = 250; S.voiceOn = true; S.v250 = 1; }   // one-time: 250 wpm with voice on
 
   const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(S)); } catch (e) {} };
+  saveSettings();
   let posSaveT = 0;
   const savePos = () => { const now = Date.now(); if (now - posSaveT > 1000) { posSaveT = now; try { localStorage.setItem(LS.pos, String(idx)); } catch (e) {} } };
 
@@ -677,6 +679,7 @@
 
   // ---------- views ----------
   function load(text, startAt = 0) {
+    if (S.voiceOn && isNat() && natOK) natWorker();        // start the one-time voice download once there's something to read
     words = tokenize(text); lower = null; findFrom = -1;
     if (!words.length) { $('count').textContent = 'Paste some text first.'; return false; }
     try { localStorage.setItem(LS.text, text); } catch (e) { /* too large to remember; fine */ }
@@ -748,7 +751,6 @@
 
   applySettings(); voiceNote();
   window.addEventListener('pagehide', stopVoice);
-  if (S.voiceOn && isNat() && natOK) natWorker();          // start the one-time voice download early
   if (localStorage.getItem(LS.text)) $('resumeBtn').classList.remove('hidden');
 })();
 </script>
