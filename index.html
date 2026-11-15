@@ -440,8 +440,19 @@
     $('prepText').textContent = dl ? `Preparing voice… ${nat.pct}%` : 'Preparing voice…';
     $('prepSub').textContent = dl ? 'One-time download, about 30 MB' : 'Playback starts in a moment';
   }
+  // The audio clock. Some iPhones report a stale currentTime while audio is playing, so when it stops moving
+  // while the context is running, carry it forward with the page clock.
+  function natNow() {
+    const ctx = nat.ctx; if (!ctx) return 0;
+    const ct = ctx.currentTime, pn = performance.now() / 1000;
+    if (ct !== nat.clkCt || ctx.state !== 'running') { nat.clkCt = ct; nat.clkPn = pn; nat.clkEst = ct; return ct; }
+    nat.clkEst = Math.max(nat.clkEst || ct, ct + (pn - nat.clkPn));
+    return pn - nat.clkPn > 0.25 ? nat.clkEst : ct;
+  }
   function natStop() {
-    nat.sources.forEach(src => { try { src.onended = null; src.stop(); } catch (e) {} });
+    // One playback at a time: cut the whole output chain, then stop every queued source.
+    if (nat.out) { try { nat.out.disconnect(); } catch (e) {} nat.out = null; }
+    nat.sources.forEach(src => { try { src.onended = null; src.stop(); src.disconnect(); } catch (e) {} });
     nat.sources = []; nat.plan = []; nat.waiting = false; nat.until = 0; prepUI();
     if (nat.raf) { cancelAnimationFrame(nat.raf); nat.raf = 0; }
   }
@@ -450,7 +461,8 @@
     const step = () => {
       nat.raf = 0;
       if (my !== gen || !nat.ctx) return;
-      const t = nat.ctx.currentTime;
+      const t = natNow();
+      while (nat.plan.length > 1 && nat.plan[1].start <= t) nat.plan.shift();   // drop runs that have finished
       const starved = !nat.plan.length || (nat.until && t > nat.until + 0.05 && !nat.finished);
       if (starved !== nat.waiting) { nat.waiting = starved; prepUI(); }
       let c = null;
@@ -471,6 +483,7 @@
     const my = gen, N = words.length;
     if (start >= N) { idx = N - 1; pause(); show(); return; }
     const ctx = natCtx();
+    const out = nat.out = ctx.createGain(); out.connect(ctx.destination);
     idx = start; show();
     let [s, e] = natChunk(start, true);
     let cur = natSynth(s, e), when = 0;
@@ -486,12 +499,12 @@
         const off = 0;
         const buf = ctx.createBuffer(1, res.audio.length, 24000);
         buf.getChannelData(0).set(res.audio);
-        const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
-        when = Math.max(when, ctx.currentTime + 0.03);
+        const src = ctx.createBufferSource(); src.buffer = buf; src.connect(out);
+        when = Math.max(when, natNow() + 0.03);
         src.start(when, off);
         nat.plan.push({ s, e, t0: when - off, start: when, times: res.times });
-        if (nat.plan.length > 4) nat.plan.shift();
-        nat.sources.push(src); if (nat.sources.length > 4) nat.sources.shift();
+        nat.sources.push(src);
+        src.addEventListener('ended', () => { const i = nat.sources.indexOf(src); if (i >= 0) nat.sources.splice(i, 1); });
         if (playing) $('status').textContent = '';
         when += buf.duration - off;
         nat.until = when;
@@ -502,7 +515,7 @@
         }
         [s, e] = nextRange; cur = next;
         // keep about 12 seconds of speech queued, no more
-        while (my === gen && when - ctx.currentTime > 12) await natSleep(400);
+        while (my === gen && when - natNow() > 12) await natSleep(400);
       }
     } catch (err) {
       if (my !== gen) return;
