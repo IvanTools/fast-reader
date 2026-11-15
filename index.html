@@ -483,7 +483,7 @@
   }
   const natSleep = ms => new Promise(r => setTimeout(r, ms));
   async function natSpeakFrom(start) {
-    stopVoice();
+    stopVoice(); keepAudioOff();
     const my = gen, N = words.length;
     if (start >= N) { idx = N - 1; pause(); show(); return; }
     const ctx = natCtx();
@@ -537,6 +537,22 @@
     try { const u0 = new SpeechSynthesisUtterance(' '); u0.volume = 0; sysUnlocked = true; synth.speak(u0); } catch (e) {}
   }
   ['touchend', 'click', 'keydown'].forEach(t => document.addEventListener(t, unlockSpeech, true));
+  // iPhone mutes device voices when the silent switch is on. A silent looping audio track moves the page into
+  // media playback, which the silent switch doesn't mute, so the voice can be heard while it plays.
+  let keeper = null;
+  function keepAudioOn() {
+    if (!/iP(hone|ad|od)|Macintosh/.test(navigator.userAgent) || !('ontouchend' in document)) return;
+    if (!keeper) {
+      const sr = 8000, n = sr, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+      const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+      keeper = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/wav' })));
+      keeper.loop = true; keeper.setAttribute('playsinline', ''); keeper.preload = 'auto';
+    }
+    try { const p = keeper.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+  }
+  function keepAudioOff() { if (keeper) try { keeper.pause(); } catch (e) {} }
   function speakFrom(start) {
     if (isNat()) return natSpeakFrom(start);
     stopVoice();
@@ -574,6 +590,7 @@
     };
     u.onend = () => { if (my !== gen || !playing) return; fallbackT.forEach(clearTimeout); fallbackT = []; speakFrom(end); };
     u.onerror = e => { if (my !== gen) return; if (e.error === 'interrupted' || e.error === 'canceled') return; $('voiceNote').textContent = 'Voice error: ' + e.error; };
+    keepAudioOn();
     sysU = u; synth.speak(u);
     // iPhone sometimes drops a speak() that follows cancel(); try once more if nothing started.
     setTimeout(() => { if (my === gen && !started && playing && !synth.speaking) { synth.cancel(); synth.speak(u); } }, 700);
@@ -601,7 +618,7 @@
     playing = true; $('playBtn').textContent = '⏸ Pause'; clearTimeout(timer);
     if (voiceActive()) speakFrom(idx); else tick();
   }
-  function pause() { playing = false; clearTimeout(timer); stopVoice(); $('playBtn').textContent = '▶ Play'; }
+  function pause() { playing = false; clearTimeout(timer); stopVoice(); keepAudioOff(); $('playBtn').textContent = '▶ Play'; }
   function toggle() { playing ? pause() : play(); }
   function seek(i, keepPlaying = playing) {
     idx = Math.max(0, Math.min(words.length - 1, i | 0));
