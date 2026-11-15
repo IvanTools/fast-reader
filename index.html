@@ -214,9 +214,10 @@
   let idx = 0;             // current word index
   let playing = false;
   let timer = null;
-  const defaults = { wpm: 350, size: 64, chunk: 1, smart: true, voiceOn: false, voice: '', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
+  const defaults = { wpm: 350, size: 64, chunk: 1, smart: true, voiceOn: false, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
   let S = Object.assign({}, defaults);
   try { Object.assign(S, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch (e) {}
+  if (!S.natDefault) { if (S.voice === '') S.voice = 'nat:M2'; S.natDefault = 1; }   // one-time switch to the Natural male voice
 
   const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(S)); } catch (e) {} };
   let posSaveT = 0;
@@ -365,7 +366,7 @@
     }
     sel.replaceChildren(...groups);
     const valid = (cur.startsWith('nat:') && natOK) || (hasSpeech && (cur === '' || sorted.some(v => v.name === cur)));
-    sel.value = valid ? cur : (hasSpeech ? '' : 'nat:F2');
+    sel.value = valid ? cur : (hasSpeech ? '' : 'nat:M2');
   }
   loadVoices(); if (hasSpeech) synth.onvoiceschanged = loadVoices;
   function natWorker() {
