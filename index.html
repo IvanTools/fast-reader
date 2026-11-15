@@ -94,6 +94,10 @@
   }
   #prep { position: absolute; left: 50%; bottom: 10%; transform: translateX(-50%); width: min(320px, 82%); padding: 12px 16px; border-radius: 12px;
     background: rgba(0,0,0,.72); color: #fff; font: 600 14px/1.3 system-ui, sans-serif; text-align: center; pointer-events: none; z-index: 5; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+  #countdown { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 800 min(32vw, 180px)/1 system-ui, sans-serif;
+    color: var(--accent, #ff5a5f); background: var(--bg); z-index: 6; pointer-events: none; }
+  #countdown.tick { animation: cdPop .9s ease-out; }
+  @keyframes cdPop { from { transform: scale(1.35); opacity: 0; } 25% { opacity: 1; } to { transform: scale(.9); opacity: .85; } }
   #prep .bar { height: 6px; margin-top: 9px; border-radius: 3px; background: rgba(255,255,255,.22); overflow: hidden; }
   #prep .bar i { display: block; height: 100%; width: 0; background: var(--accent, #ff5a5f); border-radius: 3px; transition: width .25s; }
   #prep.indet .bar i { width: 35% !important; animation: prepSlide 1.1s ease-in-out infinite; }
@@ -123,6 +127,7 @@
     <button id="startBtn" class="primary">Start reading</button>
     <button id="resumeBtn" class="hidden">Resume last text</button>
     <button id="sampleBtn">Try a sample</button>
+    <label class="muted" style="white-space:nowrap"><input id="countOn" type="checkbox"> 3-2-1 countdown</label>
     <span id="count" class="muted"></span>
   </div>
 </section>
@@ -133,6 +138,7 @@
     <div class="guide top"></div>
     <div id="word"><span class="l"></span><span class="p"></span><span class="r"></span></div>
     <div class="guide bottom"></div>
+    <div id="countdown" class="hidden" aria-live="assertive"></div>
     <div id="prep" class="hidden" role="status" aria-live="polite"><span id="prepText">Preparing voice…</span><div class="bar"><i id="prepBar"></i></div><small id="prepSub"></small></div>
   </div>
   <div id="status"></div>
@@ -226,7 +232,7 @@
   let idx = 0;             // current word index
   let playing = false;
   let timer = null;
-  const defaults = { wpm: 250, size: 64, chunk: 1, smart: true, voiceOn: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
+  const defaults = { wpm: 250, size: 64, chunk: 1, smart: true, voiceOn: true, countdown: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
   let S = Object.assign({}, defaults);
   try { Object.assign(S, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch (e) {}
   if (!S.natDefault) { if (S.voice === '') S.voice = 'nat:M2'; S.natDefault = 1; }   // one-time switch to the Natural male voice
@@ -340,7 +346,7 @@
   const hasSpeech = !!(synth && window.SpeechSynthesisUtterance);
   const VOICE_WPM = 175;          // approx words/min at rate 1.0
   const MAX_RATE = /iPhone|iPad|iPod/.test(navigator.userAgent) ? 2 : 3;
-  let gen = 0, fallbackT = [], gotBoundary = false;
+  let gen = 0, fallbackT = [], gotBoundary = false, cdT = 0;
   // Natural voice: the tiny-voca speech model running on this device (files in voice/).
   const NAT_WPM = 165, NAT_MIN = 0.7, NAT_MAX = 2.4;
   const natOK = !!(window.Worker && (window.AudioContext || window.webkitAudioContext) && window.WebAssembly);
@@ -446,14 +452,14 @@
     $('prepText').textContent = dl ? `Preparing voice… ${nat.pct}%` : 'Preparing voice…';
     $('prepSub').textContent = dl ? 'One-time download, about 30 MB' : 'Playback starts in a moment';
   }
-  // The audio clock. Some iPhones report a stale currentTime while audio is playing, so when it stops moving
-  // while the context is running, carry it forward with the page clock.
+  // The audio clock. Words follow it exactly, so text never moves while the voice is silent.
+  // If it stops moving while we expect speech, treat that as "still preparing" and nudge the audio awake.
   function natNow() {
     const ctx = nat.ctx; if (!ctx) return 0;
-    const ct = ctx.currentTime, pn = performance.now() / 1000;
-    if (ct !== nat.clkCt || ctx.state !== 'running') { nat.clkCt = ct; nat.clkPn = pn; nat.clkEst = ct; return ct; }
-    nat.clkEst = Math.max(nat.clkEst || ct, ct + (pn - nat.clkPn));
-    return pn - nat.clkPn > 0.25 ? nat.clkEst : ct;
+    const ct = ctx.currentTime, pn = performance.now();
+    if (ct !== nat.clkCt) { nat.clkCt = ct; nat.clkPn = pn; nat.stalled = false; }
+    else if (pn - nat.clkPn > 400) { nat.stalled = true; if (ctx.state !== 'running' && pn - (nat.resumeAt || 0) > 1000) { nat.resumeAt = pn; ctx.resume().catch(() => {}); } }
+    return ct;
   }
   function natStop() {
     // One playback at a time: cut the whole output chain, then stop every queued source.
@@ -469,7 +475,7 @@
       if (my !== gen || !nat.ctx) return;
       const t = natNow();
       while (nat.plan.length > 1 && nat.plan[1].start <= t) nat.plan.shift();   // drop runs that have finished
-      const starved = !nat.plan.length || (nat.until && t > nat.until + 0.05 && !nat.finished);
+      const starved = !nat.plan.length || nat.stalled || (nat.until && t > nat.until + 0.05 && !nat.finished);
       if (starved !== nat.waiting) { nat.waiting = starved; prepUI(); }
       let c = null;
       for (const x of nat.plan) if (t >= x.start - 0.01) c = x;
@@ -603,8 +609,8 @@
     playing = true; $('playBtn').textContent = '⏸ Pause'; clearTimeout(timer);
     if (voiceActive()) speakFrom(idx); else tick();
   }
-  function pause() { playing = false; clearTimeout(timer); stopVoice(); $('playBtn').textContent = '▶ Play'; }
-  function toggle() { playing ? pause() : play(); }
+  function pause() { cancelCountdown(); playing = false; clearTimeout(timer); stopVoice(); $('playBtn').textContent = '▶ Play'; }
+  function toggle() { if (cdT) { cancelCountdown(); return play(); } playing ? pause() : play(); }
   function seek(i, keepPlaying = playing) {
     idx = Math.max(0, Math.min(words.length - 1, i | 0));
     clearTimeout(timer); stopVoice();
@@ -690,7 +696,7 @@
       if (m) { const n = parseInt(m[1], 16); dark = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 140; }
       r.setProperty('color-scheme', dark ? 'dark' : 'light'); }
     $('wpm').value = S.wpm; if (document.activeElement !== $('wpmNum')) $('wpmNum').value = S.wpm;
-    $('size').value = S.size; $('chunk').value = S.chunk; $('smart').checked = S.smart;
+    $('size').value = S.size; $('chunk').value = S.chunk; $('smart').checked = S.smart; $('countOn').checked = S.countdown !== false;
     $('voiceOn').checked = S.voiceOn; $('voiceOn').disabled = !hasVoice; $('voicePick').style.opacity = S.voiceOn ? 1 : .5;
     $('cBg').value = S.bg; $('cFg').value = S.fg; $('cAc').value = S.ac;
     const key = [S.bg, S.fg, S.ac].join(',');
@@ -723,6 +729,7 @@
   $('size').oninput = e => setS('size', +e.target.value);
   $('chunk').onchange = e => setS('chunk', +e.target.value);
   $('smart').onchange = e => setS('smart', e.target.checked);
+  $('countOn').onchange = e => setS('countdown', e.target.checked);
   $('cBg').oninput = e => setS('bg', e.target.value);
   $('cFg').oninput = e => setS('fg', e.target.value);
   $('cAc').oninput = e => setS('ac', e.target.value);
@@ -766,7 +773,21 @@
     buildMap(idx); show(); markMap(true);
     return true;
   }
-  $('startBtn').onclick = () => { if (load($('source').value, 0)) play(); };
+  // Starting a new text: an optional 3-2-1 countdown, while the voice gets its first words ready.
+  function cancelCountdown() { if (cdT) { clearTimeout(cdT); cdT = 0; } $('countdown').classList.add('hidden'); }
+  $('startBtn').onclick = () => {
+    if (!load($('source').value, 0)) return;
+    cancelCountdown();
+    if (voiceActive() && isNat()) { natCtx(); natSynth(...natChunk(0, true)); }   // wake the audio inside this tap and render the opening words now
+    if (S.countdown === false) return play();
+    const el = $('countdown'); let n = 3;
+    const step = () => {
+      if (n === 0) { cdT = 0; el.classList.add('hidden'); play(); return; }
+      el.textContent = n; el.classList.remove('hidden', 'tick'); void el.offsetWidth; el.classList.add('tick');
+      n--; cdT = setTimeout(step, 900);
+    };
+    step();
+  };
   $('resumeBtn').onclick = () => { const t = localStorage.getItem(LS.text) || ''; $('source').value = t; load(t, +(localStorage.getItem(LS.pos) || 0)); };
   $('newTextBtn').onclick = () => { pause(); $('readerView').classList.add('hidden'); $('inputView').classList.remove('hidden'); $('newTextBtn').classList.add('hidden'); updateCount(); };
   $('sampleBtn').onclick = () => {
