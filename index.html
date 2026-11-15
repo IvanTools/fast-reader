@@ -322,29 +322,174 @@
 
   // ---------- voice (Web Speech API) ----------
   const synth = window.speechSynthesis;
-  const hasVoice = !!(synth && window.SpeechSynthesisUtterance);
+  const hasSpeech = !!(synth && window.SpeechSynthesisUtterance);
   const VOICE_WPM = 175;          // approx words/min at rate 1.0
   const MAX_RATE = /iPhone|iPad|iPod/.test(navigator.userAgent) ? 2 : 3;
   let gen = 0, fallbackT = [], gotBoundary = false;
+  // Natural voice: the tiny-voca speech model running on this device (files in voice/).
+  const NAT_WPM = 165, NAT_MIN = 0.7, NAT_MAX = 2.4;
+  const natOK = !!(window.Worker && (window.AudioContext || window.webkitAudioContext) && window.WebAssembly);
+  const isNat = () => (S.voice || '').startsWith('nat:');
+  const hasVoice = hasSpeech || natOK;
+  const nat = { worker: null, ready: false, loading: false, failed: '', pct: 0, ctx: null, pending: new Map(), cache: new Map(), seq: 0, sources: [], plan: [], raf: 0 };
+  const natSpeed = () => Math.max(NAT_MIN, Math.min(NAT_MAX, S.wpm / NAT_WPM));
   const voiceRate = () => Math.max(0.5, Math.min(MAX_RATE, S.wpm / VOICE_WPM));
-  const voiceActive = () => hasVoice && S.voiceOn;
-  function effWpm() { return voiceActive() ? Math.round(voiceRate() * VOICE_WPM) : S.wpm; }
+  const voiceActive = () => S.voiceOn && (isNat() ? natOK : hasSpeech);
+  function effWpm() { return voiceActive() ? Math.round(isNat() ? natSpeed() * NAT_WPM : voiceRate() * VOICE_WPM) : S.wpm; }
   function voiceNote() {
-    if (!hasVoice) { $('voiceNote').textContent = 'Read aloud isn\'t supported in this browser.'; return; }
-    $('voiceNote').textContent = S.voiceOn && S.wpm > MAX_RATE * VOICE_WPM ? `Voice tops out near ${MAX_RATE * VOICE_WPM} wpm, so playback runs at that speed.` : '';
+    const el = $('voiceNote');
+    if (!hasVoice) { el.textContent = 'Read aloud isn\'t supported in this browser.'; return; }
+    if (isNat()) {
+      if (!natOK) { el.textContent = 'The natural voice needs a newer browser.'; return; }
+      if (nat.failed) { el.textContent = 'Natural voice failed to load: ' + nat.failed; return; }
+      if (nat.loading && !nat.ready) { el.textContent = `Loading natural voice… ${nat.pct}% (one-time download, about 30 MB)`; return; }
+      el.textContent = S.voiceOn && S.wpm > NAT_MAX * NAT_WPM ? `Natural voice tops out near ${Math.round(NAT_MAX * NAT_WPM)} wpm, so playback runs at that speed.` : '';
+      return;
+    }
+    el.textContent = S.voiceOn && S.wpm > MAX_RATE * VOICE_WPM ? `Voice tops out near ${MAX_RATE * VOICE_WPM} wpm, so playback runs at that speed.` : '';
   }
   function loadVoices() {
-    if (!hasVoice) return;
-    const vs = synth.getVoices();
     const sel = $('voice'); const cur = S.voice;
-    const lang = (navigator.language || 'en').slice(0, 2);
-    const sorted = vs.slice().sort((a, b) => (b.lang.startsWith(lang) - a.lang.startsWith(lang)) || a.name.localeCompare(b.name));
-    sel.replaceChildren(...[new Option('Default voice', '')].concat(sorted.map(v => new Option(`${v.name} (${v.lang})`, v.name))));
-    sel.value = sorted.some(v => v.name === cur) ? cur : '';
+    const groups = [];
+    if (natOK) {
+      const g = document.createElement('optgroup'); g.label = 'Natural (runs on this device)';
+      g.append(new Option('Natural · Female', 'nat:F2'), new Option('Natural · Male', 'nat:M2')); groups.push(g);
+    }
+    let sorted = [];
+    if (hasSpeech) {
+      const vs = synth.getVoices();
+      const lang = (navigator.language || 'en').slice(0, 2);
+      sorted = vs.slice().sort((a, b) => (b.lang.startsWith(lang) - a.lang.startsWith(lang)) || a.name.localeCompare(b.name));
+      const g = document.createElement('optgroup'); g.label = 'System voices';
+      g.append(...[new Option('Default voice', '')].concat(sorted.map(v => new Option(`${v.name} (${v.lang})`, v.name)))); groups.push(g);
+    }
+    sel.replaceChildren(...groups);
+    const valid = (cur.startsWith('nat:') && natOK) || (hasSpeech && (cur === '' || sorted.some(v => v.name === cur)));
+    sel.value = valid ? cur : (hasSpeech ? '' : 'nat:F2');
   }
-  if (hasVoice) { loadVoices(); synth.onvoiceschanged = loadVoices; }
-  function stopVoice() { gen++; fallbackT.forEach(clearTimeout); fallbackT = []; if (hasVoice) synth.cancel(); }
+  loadVoices(); if (hasSpeech) synth.onvoiceschanged = loadVoices;
+  function natWorker() {
+    if (nat.worker) return nat.worker;
+    nat.failed = ''; nat.loading = true;
+    try { nat.worker = new Worker('voice/tts-worker.js'); } catch (e) { nat.failed = String(e.message || e); nat.loading = false; voiceNote(); return null; }
+    nat.worker.onmessage = e => {
+      const m = e.data;
+      if (m.type === 'progress') { nat.pct = m.pct; if (isNat()) voiceNote(); }
+      else if (m.type === 'ready') { nat.ready = true; nat.loading = false; voiceNote(); }
+      else if (m.type === 'audio' || m.type === 'error') {
+        const p = m.id != null && nat.pending.get(m.id);
+        if (p) { nat.pending.delete(m.id); m.type === 'audio' ? p.resolve(m) : p.reject(new Error(m.message)); }
+        else if (m.type === 'error') { nat.failed = m.message; nat.loading = false; nat.worker.terminate(); nat.worker = null; voiceNote(); }
+      }
+    };
+    nat.worker.onerror = e => { nat.failed = e.message || 'the voice files could not be loaded'; nat.loading = false; voiceNote(); };
+    nat.worker.postMessage({ type: 'init' });
+    voiceNote();
+    return nat.worker;
+  }
+  function natCtx() {
+    if (!nat.ctx) {
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+      nat.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (nat.ctx.state !== 'running') nat.ctx.resume();
+    return nat.ctx;
+  }
+  // The chunk of text that holds word i: one sentence, split at a comma or after 36 words when long.
+  function natChunk(i) {
+    const N = words.length;
+    let s = sentenceStart(i);
+    for (;;) {
+      let e = s;
+      while (e < N && e - s < 36) { e++; if (isEnd(words[e - 1]) || (e - s >= 18 && /[,;:—–]["'”’)\]]*$/.test(words[e - 1]))) break; }
+      if (i < e || e >= N) return [s, Math.max(e, s + 1)];
+      s = e;
+    }
+  }
+  function natSynth(s, e) {
+    const voice = S.voice === 'nat:M2' ? 1 : 0, speed = Math.round(natSpeed() * 100) / 100;
+    const key = `${s}|${e}|${voice}|${speed}`;
+    if (nat.cache.has(key)) { const v = nat.cache.get(key); nat.cache.delete(key); nat.cache.set(key, v); return v; }
+    const w = natWorker();
+    const p = new Promise((resolve, reject) => {
+      if (!w) return reject(new Error(nat.failed || 'voice unavailable'));
+      const id = ++nat.seq; nat.pending.set(id, { resolve, reject });
+      w.postMessage({ type: 'synth', id, words: words.slice(s, e), voice, speed });
+    });
+    p.catch(() => nat.cache.delete(key));
+    nat.cache.set(key, p);
+    while (nat.cache.size > 16) nat.cache.delete(nat.cache.keys().next().value);
+    return p;
+  }
+  function natStop() {
+    nat.sources.forEach(src => { try { src.onended = null; src.stop(); } catch (e) {} });
+    nat.sources = []; nat.plan = [];
+    if (nat.raf) { cancelAnimationFrame(nat.raf); nat.raf = 0; }
+  }
+  function natFollow(my) {
+    if (nat.raf) return;
+    const step = () => {
+      nat.raf = 0;
+      if (my !== gen || !nat.ctx) return;
+      const t = nat.ctx.currentTime;
+      let c = null;
+      for (const x of nat.plan) if (t >= x.start - 0.01) c = x;
+      if (c) {
+        const rel = t - c.t0; let k = 0;
+        while (k + 1 < c.times.length && c.times[k + 1] <= rel) k++;
+        const ni = Math.min(words.length - 1, c.s + k);
+        if (ni !== idx) { idx = ni; show(); }
+      }
+      nat.raf = requestAnimationFrame(step);
+    };
+    nat.raf = requestAnimationFrame(step);
+  }
+  const natSleep = ms => new Promise(r => setTimeout(r, ms));
+  async function natSpeakFrom(start) {
+    stopVoice();
+    const my = gen, N = words.length;
+    if (start >= N) { idx = N - 1; pause(); show(); return; }
+    const ctx = natCtx();
+    idx = start; show();
+    let [s, e] = natChunk(start);
+    let cur = natSynth(s, e), first = true, when = 0;
+    natFollow(my);
+    if (!nat.ready) $('status').textContent = 'Getting the voice ready…';
+    try {
+      while (my === gen) {
+        const res = await cur;
+        if (my !== gen) return;
+        const nextRange = e < N ? natChunk(e) : null;
+        const next = nextRange ? natSynth(nextRange[0], nextRange[1]) : null;      // start the next one now
+        const off = first ? (res.times[start - s] || 0) : 0;
+        first = false;
+        const buf = ctx.createBuffer(1, res.audio.length, 24000);
+        buf.getChannelData(0).set(res.audio);
+        const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
+        when = Math.max(when, ctx.currentTime + 0.03);
+        src.start(when, off);
+        nat.plan.push({ s, e, t0: when - off, start: when, times: res.times });
+        if (nat.plan.length > 4) nat.plan.shift();
+        nat.sources.push(src); if (nat.sources.length > 4) nat.sources.shift();
+        if (playing) $('status').textContent = '';
+        when += buf.duration - off;
+        if (!next) {
+          src.onended = () => { if (my === gen && playing) { idx = N - 1; pause(); show(); } };
+          return;
+        }
+        [s, e] = nextRange; cur = next;
+        // keep about 12 seconds of speech queued, no more
+        while (my === gen && when - ctx.currentTime > 12) await natSleep(400);
+      }
+    } catch (err) {
+      if (my !== gen) return;
+      $('voiceNote').textContent = 'Natural voice error: ' + err.message;
+      if (playing) { natStop(); tick(); }
+    }
+  }
+  function stopVoice() { gen++; fallbackT.forEach(clearTimeout); fallbackT = []; if (hasSpeech) synth.cancel(); natStop(); }
   function speakFrom(start) {
+    if (isNat()) return natSpeakFrom(start);
     stopVoice();
     const my = gen, N = words.length;
     if (start >= N) { idx = N - 1; pause(); show(); return; }
@@ -486,7 +631,9 @@
   }
   let restartT = 0;
   const setS = (k, v) => {
-    S[k] = v; saveSettings(); applySettings(); voiceNote();
+    S[k] = v; saveSettings(); applySettings();
+    if ((k === 'voice' || k === 'voiceOn') && S.voiceOn && isNat() && natOK) natWorker();
+    voiceNote();
     if ((k === 'smart' || k === 'chunk') && words.length) buildTimes();
     if (!words.length) return;
     if (!playing) { show(); return; }
@@ -604,6 +751,7 @@
 
   applySettings(); voiceNote();
   window.addEventListener('pagehide', stopVoice);
+  if (S.voiceOn && isNat() && natOK) natWorker();          // start the one-time voice download early
   if (localStorage.getItem(LS.text)) $('resumeBtn').classList.remove('hidden');
 })();
 </script>
