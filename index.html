@@ -382,7 +382,7 @@
   function natWorker() {
     if (nat.worker) return nat.worker;
     nat.failed = ''; nat.loading = true;
-    try { nat.worker = new Worker('voice/tts-worker.js'); } catch (e) { nat.failed = String(e.message || e); nat.loading = false; voiceNote(); return null; }
+    try { nat.worker = new Worker('voice/tts-worker.js?v=2'); } catch (e) { nat.failed = String(e.message || e); nat.loading = false; voiceNote(); return null; }
     nat.worker.onmessage = e => {
       const m = e.data;
       if (m.type === 'progress') { nat.pct = m.pct; if (isNat()) voiceNote(); prepUI(); }
