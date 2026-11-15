@@ -526,7 +526,11 @@
   function stopVoice() { gen++; fallbackT.forEach(clearTimeout); fallbackT = []; if (hasSpeech) synth.cancel(); natStop(); }
   function speakFrom(start) {
     if (isNat()) return natSpeakFrom(start);
+    const wasBusy = synth.speaking || synth.pending;
     stopVoice();
+    // Hand the audio back to the system voice: on iPhone an open Web Audio session can silence speech.
+    if (nat.ctx) { try { nat.ctx.close(); } catch (e) {} nat.ctx = null; }
+    try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch (e) {}
     const my = gen, N = words.length;
     if (start >= N) { idx = N - 1; pause(); show(); return; }
     // chunk: to end of sentence, 6..40 words
@@ -544,15 +548,26 @@
       let k = 0; while (k + 1 < offs.length && offs[k + 1] <= e.charIndex) k++;
       if (start + k !== idx) { idx = start + k; show(); }
     };
-    u.onstart = () => {
+    let started = false;
+    u.onstart = ev => {
+      if (started) return; started = true;
+      const silent = ev === 'silent';
       if (my !== gen || gotBoundary) return;
       // fallback for browsers without word boundary events: estimate timing
       const per = 60000 / (u.rate * VOICE_WPM); let t = 0;
       for (let i = start + 1; i < end; i++) { t += per * (isEnd(words[i - 1]) ? 1.6 : /[,;:]$/.test(words[i - 1]) ? 1.25 : 1); const j = i; fallbackT.push(setTimeout(() => { if (my === gen && !gotBoundary) { idx = j; show(); } }, t)); }
+      if (silent) fallbackT.push(setTimeout(() => { if (my === gen && playing) speakFrom(end); }, t + per));
     };
     u.onend = () => { if (my !== gen || !playing) return; fallbackT.forEach(clearTimeout); fallbackT = []; speakFrom(end); };
     u.onerror = e => { if (my !== gen) return; if (e.error === 'interrupted' || e.error === 'canceled') return; $('voiceNote').textContent = 'Voice error: ' + e.error; };
-    synth.speak(u);
+    // iPhone drops a speak() that follows cancel() too closely, so give it a moment when something was playing.
+    if (wasBusy) setTimeout(() => { if (my === gen) synth.speak(u); }, 120); else synth.speak(u);
+    // If the voice never starts (some iPhone voices aren't downloaded), keep the words moving and say so.
+    setTimeout(() => {
+      if (my !== gen || started || !playing) return;
+      $('voiceNote').textContent = 'This voice didn’t start on this device. Try another voice, or a Natural one.';
+      u.onstart('silent');
+    }, 3000);
   }
 
   // ---------- playback ----------
