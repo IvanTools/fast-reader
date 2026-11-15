@@ -523,10 +523,17 @@
       if (playing) { natStop(); tick(); }
     }
   }
-  function stopVoice() { gen++; fallbackT.forEach(clearTimeout); fallbackT = []; if (hasSpeech) synth.cancel(); natStop(); }
+  function stopVoice() { gen++; fallbackT.forEach(clearTimeout); fallbackT = []; if (hasSpeech && sysU) { sysU = null; synth.cancel(); } natStop(); }
+  // iPhone only lets a page speak after speech has started inside a tap. The Natural voice no longer gives that first tap
+  // to the system voice, so the first tap anywhere quietly starts a silent utterance to unlock it.
+  let sysU = null, sysUnlocked = false;
+  function unlockSpeech() {
+    if (sysUnlocked || !hasSpeech) return;
+    try { const u0 = new SpeechSynthesisUtterance(' '); u0.volume = 0; sysUnlocked = true; synth.speak(u0); } catch (e) {}
+  }
+  ['touchend', 'click', 'keydown'].forEach(t => document.addEventListener(t, unlockSpeech, true));
   function speakFrom(start) {
     if (isNat()) return natSpeakFrom(start);
-    const wasBusy = synth.speaking || synth.pending;
     stopVoice();
     // Hand the audio back to the system voice: on iPhone an open Web Audio session can silence speech.
     if (nat.ctx) { try { nat.ctx.close(); } catch (e) {} nat.ctx = null; }
@@ -550,6 +557,7 @@
     };
     let started = false;
     u.onstart = ev => {
+      if (ev !== 'silent') sysUnlocked = true;
       if (started) return; started = true;
       const silent = ev === 'silent';
       if (my !== gen || gotBoundary) return;
@@ -560,8 +568,9 @@
     };
     u.onend = () => { if (my !== gen || !playing) return; fallbackT.forEach(clearTimeout); fallbackT = []; speakFrom(end); };
     u.onerror = e => { if (my !== gen) return; if (e.error === 'interrupted' || e.error === 'canceled') return; $('voiceNote').textContent = 'Voice error: ' + e.error; };
-    // iPhone drops a speak() that follows cancel() too closely, so give it a moment when something was playing.
-    if (wasBusy) setTimeout(() => { if (my === gen) synth.speak(u); }, 120); else synth.speak(u);
+    sysU = u; synth.speak(u);
+    // iPhone sometimes drops a speak() that follows cancel(); try once more if nothing started.
+    setTimeout(() => { if (my === gen && !started && playing && !synth.speaking) { synth.cancel(); synth.speak(u); } }, 700);
     // If the voice never starts (some iPhone voices aren't downloaded), keep the words moving and say so.
     setTimeout(() => {
       if (my !== gen || started || !playing) return;
@@ -690,7 +699,9 @@
     if (!playing) { show(); return; }
     updateTime();
     if (k === 'voiceOn' || k === 'voice' || (k === 'wpm' && voiceActive())) {
-      clearTimeout(restartT); restartT = setTimeout(() => { if (playing) { clearTimeout(timer); stopVoice(); voiceActive() ? speakFrom(idx) : tick(); } }, k === 'wpm' ? 350 : 0);
+      clearTimeout(restartT);
+      const restart = () => { if (playing) { clearTimeout(timer); stopVoice(); voiceActive() ? speakFrom(idx) : tick(); } };
+      if (k === 'wpm') restartT = setTimeout(restart, 350); else restart();
     }
   };
   $('voiceOn').onchange = e => setS('voiceOn', e.target.checked);
