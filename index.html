@@ -69,7 +69,11 @@
   .ctl label { font-size: 14px; opacity: .8; white-space: nowrap; }
   input[type=range] { accent-color: var(--accent); }
   input[type=color] { width: 38px; height: 32px; border: 1px solid var(--border); border-radius: 8px; padding: 2px; background: var(--panel); cursor: pointer; }
-  #wpmVal { min-width: 70px; font-variant-numeric: tabular-nums; }
+  #wpmVal { min-width: 70px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #wpmNum { width: 4.2em; font: inherit; font-size: 16px; font-variant-numeric: tabular-nums; color: inherit; background: transparent; text-align: right;
+    border: 1px dashed var(--border); border-radius: 6px; padding: 2px 4px; -moz-appearance: textfield; appearance: textfield; cursor: text; }
+  #wpmNum:focus { outline: none; border: 1px solid var(--accent); background: var(--panel); }
+  #wpmNum::-webkit-inner-spin-button, #wpmNum::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
   /* Text map */
   #mapWrap { max-width: 1000px; width: 100%; margin: 0 auto 24px; padding: 0 20px; }
@@ -153,7 +157,7 @@
       <div class="ctl">
         <label for="wpm">Speed</label>
         <input id="wpm" type="range" min="60" max="1500" step="10">
-        <span id="wpmVal"></span>
+        <span id="wpmVal"><input id="wpmNum" type="number" inputmode="numeric" min="60" max="1500" step="1" title="Tap to type a speed" aria-label="Words per minute"> wpm</span>
       </div>
       <div class="ctl">
         <label for="size">Size</label>
@@ -681,7 +685,7 @@
     { const m = /^#?([0-9a-f]{6})$/i.exec(S.bg || ''); let dark = true;
       if (m) { const n = parseInt(m[1], 16); dark = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 140; }
       r.setProperty('color-scheme', dark ? 'dark' : 'light'); }
-    $('wpm').value = S.wpm; $('wpmVal').textContent = S.wpm + ' wpm';
+    $('wpm').value = S.wpm; if (document.activeElement !== $('wpmNum')) $('wpmNum').value = S.wpm;
     $('size').value = S.size; $('chunk').value = S.chunk; $('smart').checked = S.smart;
     $('voiceOn').checked = S.voiceOn; $('voiceOn').disabled = !hasVoice; $('voicePick').style.opacity = S.voiceOn ? 1 : .5;
     $('cBg').value = S.bg; $('cFg').value = S.fg; $('cAc').value = S.ac;
@@ -707,6 +711,11 @@
   $('voiceOn').onchange = e => setS('voiceOn', e.target.checked);
   $('voice').onchange = e => setS('voice', e.target.value);
   $('wpm').oninput = e => setS('wpm', +e.target.value);
+  // Type an exact speed: tap the number, type, then press Enter or tap away.
+  const commitWpm = () => { const n = Math.round(+$('wpmNum').value); if (n > 0) setS('wpm', Math.max(60, Math.min(1500, n))); $('wpmNum').value = S.wpm; };
+  $('wpmNum').onchange = commitWpm;
+  $('wpmNum').onfocus = e => e.target.select();
+  $('wpmNum').onkeydown = e => { if (e.key === 'Enter') { commitWpm(); e.target.blur(); } e.stopPropagation(); };
   $('size').oninput = e => setS('size', +e.target.value);
   $('chunk').onchange = e => setS('chunk', +e.target.value);
   $('smart').onchange = e => setS('smart', e.target.checked);
@@ -729,7 +738,7 @@
 
   document.addEventListener('keydown', e => {
     if ($('readerView').classList.contains('hidden')) return;
-    if (e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+    if (e.target.tagName === 'INPUT' && (e.target.type === 'text' || e.target.type === 'number')) return;
     switch (e.key) {
       case ' ': e.preventDefault(); toggle(); break;
       case 'ArrowLeft': e.preventDefault(); e.shiftKey ? prevSentence() : seek(idx - 10); break;
