@@ -94,6 +94,11 @@
   }
   #prep { position: absolute; left: 50%; bottom: 10%; transform: translateX(-50%); width: min(320px, 82%); padding: 12px 16px; border-radius: 12px;
     background: rgba(0,0,0,.72); color: #fff; font: 600 14px/1.3 system-ui, sans-serif; text-align: center; pointer-events: none; z-index: 5; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+  #prep.tap { pointer-events: auto; cursor: pointer; background: var(--accent, #ff5a5f); }
+  #voiceBanner { align-self: center; margin: 8px auto 0; max-width: 92%; font-size: 15px; border-radius: 999px; padding: 8px 16px; }
+  #voiceBanner.ready { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; animation: vbIn .5s ease-out; }
+  #voiceBanner.loading { opacity: .65; cursor: default; }
+  @keyframes vbIn { from { transform: scale(.9); opacity: 0; } to { transform: none; opacity: 1; } }
   #countdown { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 800 min(32vw, 180px)/1 system-ui, sans-serif;
     color: var(--accent, #ff5a5f); background: var(--bg); z-index: 6; pointer-events: none; }
   #countdown.tick { animation: cdPop .9s ease-out; }
@@ -134,6 +139,7 @@
 
 <!-- READER -->
 <section id="readerView" class="hidden">
+  <button id="voiceBanner" class="hidden" type="button"></button>
   <div id="stage" title="Tap to play or pause">
     <div class="guide top"></div>
     <div id="word"><span class="l"></span><span class="p"></span><span class="r"></span></div>
@@ -232,11 +238,12 @@
   let idx = 0;             // current word index
   let playing = false;
   let timer = null;
-  const defaults = { wpm: 250, size: 64, chunk: 1, smart: true, voiceOn: true, countdown: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
+  const defaults = { wpm: 250, size: 64, chunk: 1, smart: true, voiceOn: false, countdown: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
   let S = Object.assign({}, defaults);
   try { Object.assign(S, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch (e) {}
   if (!S.natDefault) { if (S.voice === '') S.voice = 'nat:M2'; S.natDefault = 1; }   // one-time switch to the Natural male voice
-  if (!S.v250) { S.wpm = 250; S.voiceOn = true; S.v250 = 1; }   // one-time: 250 wpm with voice on
+  if (!S.v250) { S.wpm = 250; S.v250 = 1; }   // one-time: 250 wpm
+  if (!S.bgVoice) { S.voiceOn = false; S.bgVoice = 1; }   // one-time: read aloud starts off; the natural voice loads in the background and offers itself when ready
 
   const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(S)); } catch (e) {} };
   saveSettings();
@@ -397,15 +404,15 @@
     try { nat.worker = new Worker('voice/tts-worker.js?v=2'); } catch (e) { nat.failed = String(e.message || e); nat.loading = false; voiceNote(); return null; }
     nat.worker.onmessage = e => {
       const m = e.data;
-      if (m.type === 'progress') { nat.pct = m.pct; if (isNat()) voiceNote(); prepUI(); }
-      else if (m.type === 'ready') { nat.ready = true; nat.loading = false; voiceNote(); prepUI(); }
+      if (m.type === 'progress') { nat.pct = m.pct; if (isNat()) voiceNote(); prepUI(); bannerUI(); }
+      else if (m.type === 'ready') { nat.ready = true; nat.loading = false; voiceNote(); prepUI(); natPrewarm(); }
       else if (m.type === 'audio' || m.type === 'error') {
         const p = m.id != null && nat.pending.get(m.id);
         if (p) { nat.pending.delete(m.id); m.type === 'audio' ? p.resolve(m) : p.reject(new Error(m.message)); }
-        else if (m.type === 'error') { nat.failed = m.message; nat.loading = false; nat.worker.terminate(); nat.worker = null; voiceNote(); }
+        else if (m.type === 'error') { nat.failed = m.message; nat.loading = false; nat.worker.terminate(); nat.worker = null; voiceNote(); bannerUI(); }
       }
     };
-    nat.worker.onerror = e => { nat.failed = e.message || 'the voice files could not be loaded'; nat.loading = false; voiceNote(); };
+    nat.worker.onerror = e => { nat.failed = e.message || 'the voice files could not be loaded'; nat.loading = false; voiceNote(); bannerUI(); };
     nat.worker.postMessage({ type: 'init' });
     voiceNote();
     return nat.worker;
@@ -416,8 +423,23 @@
       nat.ctx = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (nat.ctx.state !== 'running') nat.ctx.resume();
+    natKeep();
     return nat.ctx;
   }
+  // A silent looping sound keeps the audio running between taps and words (iPhone freezes an idle audio clock),
+  // so speech scheduled later still plays. Started from a tap; stopped when playback stops.
+  function natKeep() {
+    const ctx = nat.ctx; if (!ctx || nat.keep) return;
+    try {
+      const src = ctx.createBufferSource(); src.buffer = ctx.createBuffer(1, Math.round(ctx.sampleRate / 4), ctx.sampleRate);
+      src.loop = true; src.connect(ctx.destination); src.start(); nat.keep = src;
+    } catch (e) {}
+  }
+  function natUnkeep() { if (nat.keep) { try { nat.keep.stop(); nat.keep.disconnect(); } catch (e) {} nat.keep = null; } }
+  // Any tap: wake the audio while we're allowed to.
+  ['touchend', 'click', 'keydown'].forEach(t => document.addEventListener(t, () => {
+    if (nat.ctx && (playing || cdT || nat.starting)) { if (nat.ctx.state !== 'running') nat.ctx.resume().catch(() => {}); natKeep(); }
+  }, true));
   // The run of words spoken in one go, starting at word s: a sentence, split at a comma or after 36 words when long.
   // The first run after pressing Play is kept short so the voice starts quickly.
   function natChunk(s, quick) {
@@ -436,16 +458,18 @@
       const id = ++nat.seq; nat.pending.set(id, { resolve, reject });
       w.postMessage({ type: 'synth', id, words: words.slice(s, e), voice, speed });
     });
-    p.catch(() => nat.cache.delete(key));
+    p.then(() => { p.done = true; }, () => nat.cache.delete(key));
     nat.cache.set(key, p);
     while (nat.cache.size > 16) nat.cache.delete(nat.cache.keys().next().value);
     return p;
   }
   // "Preparing voice" pop-up: shown while playing but no speech is coming out yet (download, first render, or a render that fell behind).
   function prepUI() {
-    const show = playing && nat.waiting && isNat() && S.voiceOn;
+    const show = ((playing && nat.waiting) || nat.starting) && isNat() && S.voiceOn;
     $('prep').classList.toggle('hidden', !show);
+    $('prep').classList.toggle('tap', !!(show && nat.stuck));
     if (!show) return;
+    if (nat.stuck) { $('prep').classList.add('indet'); $('prepText').textContent = 'Tap here to start the voice'; $('prepSub').textContent = 'Your phone paused the audio'; return; }
     const dl = nat.loading && !nat.ready;
     $('prep').classList.toggle('indet', !dl);
     $('prepBar').style.width = (dl ? nat.pct : 0) + '%';
@@ -457,15 +481,20 @@
   function natNow() {
     const ctx = nat.ctx; if (!ctx) return 0;
     const ct = ctx.currentTime, pn = performance.now();
-    if (ct !== nat.clkCt) { nat.clkCt = ct; nat.clkPn = pn; nat.stalled = false; }
-    else if (pn - nat.clkPn > 400) { nat.stalled = true; if (ctx.state !== 'running' && pn - (nat.resumeAt || 0) > 1000) { nat.resumeAt = pn; ctx.resume().catch(() => {}); } }
+    if (ct !== nat.clkCt) { nat.clkCt = ct; nat.clkPn = pn; nat.stalled = false; if (nat.stuck) { nat.stuck = false; prepUI(); } }
+    else if (pn - nat.clkPn > 400) {
+      nat.stalled = true;
+      if (ctx.state !== 'running' && pn - (nat.resumeAt || 0) > 1000) { nat.resumeAt = pn; ctx.resume().catch(() => {}); }
+      // Speech is queued but the clock hasn't moved for 2.5 s: the phone has frozen the audio, and only a tap can restart it.
+      if (!nat.stuck && pn - nat.clkPn > 2500 && nat.plan.length) { nat.stuck = true; prepUI(); }
+    }
     return ct;
   }
   function natStop() {
     // One playback at a time: cut the whole output chain, then stop every queued source.
     if (nat.out) { try { nat.out.disconnect(); } catch (e) {} nat.out = null; }
     nat.sources.forEach(src => { try { src.onended = null; src.stop(); src.disconnect(); } catch (e) {} });
-    nat.sources = []; nat.plan = []; nat.waiting = false; nat.until = 0; prepUI();
+    nat.sources = []; nat.plan = []; nat.waiting = false; nat.until = 0; nat.stuck = false; natUnkeep(); prepUI();
     if (nat.raf) { cancelAnimationFrame(nat.raf); nat.raf = 0; }
   }
   function natFollow(my) {
@@ -608,9 +637,10 @@
     if (idx >= words.length - 1) idx = 0;
     playing = true; $('playBtn').textContent = '⏸ Pause'; clearTimeout(timer);
     if (voiceActive()) speakFrom(idx); else tick();
+    bannerUI();
   }
-  function pause() { cancelCountdown(); playing = false; clearTimeout(timer); stopVoice(); $('playBtn').textContent = '▶ Play'; }
-  function toggle() { if (cdT) { cancelCountdown(); return play(); } playing ? pause() : play(); }
+  function pause() { cancelCountdown(); playing = false; bannerUI(); clearTimeout(timer); stopVoice(); $('playBtn').textContent = '▶ Play'; }
+  function toggle() { if (cdT || nat.starting) { cancelCountdown(); return play(); } playing ? pause() : play(); }
   function seek(i, keepPlaying = playing) {
     idx = Math.max(0, Math.min(words.length - 1, i | 0));
     clearTimeout(timer); stopVoice();
@@ -706,8 +736,8 @@
   let restartT = 0;
   const setS = (k, v) => {
     S[k] = v; saveSettings(); applySettings();
-    if ((k === 'voice' || k === 'voiceOn') && S.voiceOn && isNat() && natOK) natWorker();
-    voiceNote();
+    if ((k === 'voice' || k === 'voiceOn') && isNat() && natOK && (S.voiceOn || words.length)) { natWorker(); natPrewarm(); }
+    voiceNote(); bannerUI();
     if ((k === 'smart' || k === 'chunk') && words.length) buildTimes();
     if (!words.length) return;
     if (!playing) { show(); return; }
@@ -738,6 +768,14 @@
   // ---------- controls ----------
   $('playBtn').onclick = toggle;
   $('stage').onclick = toggle;
+  // "Tap here to start the voice": the phone froze the audio, so build fresh audio inside this tap and carry on from this word.
+  $('prep').onclick = e => {
+    if (!nat.stuck) return;
+    e.stopPropagation();
+    nat.stuck = false; natStop();
+    if (nat.ctx) { try { nat.ctx.close(); } catch (err) {} nat.ctx = null; }
+    if (playing) speakFrom(idx);
+  };
   $('restartBtn').onclick = () => seek(0);
   $('backBtn').onclick = () => seek(idx - 10);
   $('fwdBtn').onclick = () => seek(idx + 10);
@@ -762,7 +800,6 @@
 
   // ---------- views ----------
   function load(text, startAt = 0) {
-    if (S.voiceOn && isNat() && natOK) natWorker();        // start the one-time voice download once there's something to read
     words = tokenize(text); lower = null; findFrom = -1;
     if (!words.length) { $('count').textContent = 'Paste some text first.'; return false; }
     try { localStorage.setItem(LS.text, text); } catch (e) { /* too large to remember; fine */ }
@@ -771,14 +808,18 @@
     idx = Math.min(startAt, words.length - 1);
     $('inputView').classList.add('hidden'); $('readerView').classList.remove('hidden'); $('newTextBtn').classList.remove('hidden');
     buildMap(idx); show(); markMap(true);
+    if (isNat() && natOK) { natWorker(); natPrewarm(); }   // load the natural voice in the background and render the opening words
+    bannerUI();
     return true;
   }
-  // Starting a new text: an optional 3-2-1 countdown, while the voice gets its first words ready.
-  function cancelCountdown() { if (cdT) { clearTimeout(cdT); cdT = 0; } $('countdown').classList.add('hidden'); }
-  $('startBtn').onclick = () => {
-    if (!load($('source').value, 0)) return;
-    cancelCountdown();
-    if (voiceActive() && isNat()) { natCtx(); natSynth(...natChunk(0, true)); }   // wake the audio inside this tap and render the opening words now
+  // Starting a new text. With the natural voice on, wait (showing progress) until its opening words are rendered,
+  // then the optional 3-2-1 countdown, so speech starts the moment the countdown ends.
+  function cancelCountdown() {
+    if (cdT) { clearTimeout(cdT); cdT = 0; }
+    $('countdown').classList.add('hidden');
+    if (nat.starting) { nat.starting = 0; prepUI(); }
+  }
+  function countdownThenPlay() {
     if (S.countdown === false) return play();
     const el = $('countdown'); let n = 3;
     const step = () => {
@@ -787,6 +828,39 @@
       n--; cdT = setTimeout(step, 900);
     };
     step();
+  }
+  function beginReading() {
+    cancelCountdown();
+    if (!(voiceActive() && isNat())) return countdownThenPlay();
+    natCtx();                                    // wake the audio inside this tap
+    const p = natSynth(...natChunk(idx, true));  // the opening words
+    if (p.done) return countdownThenPlay();
+    const token = nat.starting = Date.now(); prepUI();
+    const go = () => { if (nat.starting !== token) return; nat.starting = 0; prepUI(); countdownThenPlay(); };
+    p.then(go, go);
+  }
+  $('startBtn').onclick = () => { if (load($('source').value, 0)) beginReading(); };
+  // The banner over the words: the natural voice loading in the background, then an offer to turn it on.
+  function natPrewarm() {
+    if (!nat.ready || !words.length || !isNat()) return;
+    const [s, e] = natChunk(idx, true);
+    natSynth(s, e).then(() => { nat.warm = true; bannerUI(); if (e < words.length) natSynth(...natChunk(e)); }).catch(() => {});
+  }
+  function bannerUI() {
+    const b = $('voiceBanner');
+    const show = natOK && isNat() && !S.voiceOn && !nat.failed && words.length && (nat.loading || nat.ready);
+    b.classList.toggle('hidden', !show);
+    if (!show) return;
+    const ready = nat.ready && nat.warm;
+    b.classList.toggle('ready', ready); b.classList.toggle('loading', !ready);
+    b.textContent = ready ? '🔊 Natural voice ready · tap to read aloud' : `Natural voice loading in the background… ${nat.pct || 0}%`;
+  }
+  $('voiceBanner').onclick = () => {
+    if (!(nat.ready && nat.warm)) return;
+    natCtx();                                    // inside the tap, so the phone lets it play
+    const wasPlaying = playing;
+    setS('voiceOn', true);                       // restarts with the voice if already playing
+    if (!wasPlaying) { if (idx === 0) beginReading(); else play(); }
   };
   $('resumeBtn').onclick = () => { const t = localStorage.getItem(LS.text) || ''; $('source').value = t; load(t, +(localStorage.getItem(LS.pos) || 0)); };
   $('newTextBtn').onclick = () => { pause(); $('readerView').classList.add('hidden'); $('inputView').classList.remove('hidden'); $('newTextBtn').classList.add('hidden'); updateCount(); };
