@@ -395,16 +395,13 @@
     if (nat.ctx.state !== 'running') nat.ctx.resume();
     return nat.ctx;
   }
-  // The chunk of text that holds word i: one sentence, split at a comma or after 36 words when long.
-  function natChunk(i) {
-    const N = words.length;
-    let s = sentenceStart(i);
-    for (;;) {
-      let e = s;
-      while (e < N && e - s < 36) { e++; if (isEnd(words[e - 1]) || (e - s >= 18 && /[,;:—–]["'”’)\]]*$/.test(words[e - 1]))) break; }
-      if (i < e || e >= N) return [s, Math.max(e, s + 1)];
-      s = e;
-    }
+  // The run of words spoken in one go, starting at word s: a sentence, split at a comma or after 36 words when long.
+  // The first run after pressing Play is kept short so the voice starts quickly.
+  function natChunk(s, quick) {
+    const N = words.length, max = quick ? 12 : 36, comma = quick ? 4 : 18;
+    let e = s;
+    while (e < N && e - s < max) { e++; if (isEnd(words[e - 1]) || (e - s >= comma && /[,;:—–]["'”’)\]]*$/.test(words[e - 1]))) break; }
+    return [s, Math.max(e, s + 1)];
   }
   function natSynth(s, e) {
     const voice = S.voice === 'nat:M2' ? 1 : 0, speed = Math.round(natSpeed() * 100) / 100;
@@ -451,18 +448,17 @@
     if (start >= N) { idx = N - 1; pause(); show(); return; }
     const ctx = natCtx();
     idx = start; show();
-    let [s, e] = natChunk(start);
-    let cur = natSynth(s, e), first = true, when = 0;
+    let [s, e] = natChunk(start, true);
+    let cur = natSynth(s, e), when = 0;
     natFollow(my);
-    if (!nat.ready) $('status').textContent = 'Getting the voice ready…';
+    $('status').textContent = nat.ready ? 'Starting the voice…' : 'Getting the voice ready…';
     try {
       while (my === gen) {
         const res = await cur;
         if (my !== gen) return;
         const nextRange = e < N ? natChunk(e) : null;
         const next = nextRange ? natSynth(nextRange[0], nextRange[1]) : null;      // start the next one now
-        const off = first ? (res.times[start - s] || 0) : 0;
-        first = false;
+        const off = 0;
         const buf = ctx.createBuffer(1, res.audio.length, 24000);
         buf.getChannelData(0).set(res.audio);
         const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
