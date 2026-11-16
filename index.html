@@ -238,11 +238,12 @@
   let idx = 0;             // current word index
   let playing = false;
   let timer = null;
-  const defaults = { wpm: 250, size: 64, chunk: 1, smart: true, voiceOn: false, countdown: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
+  const defaults = { wpm: 200, size: 64, chunk: 1, smart: true, voiceOn: false, countdown: true, voice: 'nat:M2', bg: '#0f1115', fg: '#e8e8e8', ac: '#ff5a5f' };
   let S = Object.assign({}, defaults);
   try { Object.assign(S, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch (e) {}
   if (!S.natDefault) { if (S.voice === '') S.voice = 'nat:M2'; S.natDefault = 1; }   // one-time switch to the Natural male voice
-  if (!S.v250) { S.wpm = 250; S.v250 = 1; }   // one-time: 250 wpm
+  if (!S.v250) { S.wpm = 200; S.v250 = 1; }   // one-time: default speed
+  if (!S.v200) { if (S.wpm === 250) S.wpm = 200; S.v200 = 1; }   // one-time: the old 250 default becomes 200; custom speeds stay
   if (!S.bgVoice) { S.voiceOn = false; S.bgVoice = 1; }   // one-time: read aloud starts off; the natural voice loads in the background and offers itself when ready
 
   const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(S)); } catch (e) {} };
@@ -865,7 +866,7 @@
   $('resumeBtn').onclick = () => { const t = localStorage.getItem(LS.text) || ''; $('source').value = t; load(t, +(localStorage.getItem(LS.pos) || 0)); };
   $('newTextBtn').onclick = () => { pause(); $('readerView').classList.add('hidden'); $('inputView').classList.remove('hidden'); $('newTextBtn').classList.add('hidden'); updateCount(); };
   $('sampleBtn').onclick = () => {
-    $('source').value = "Speed reading with a fixed focal point removes the biggest drag on reading: moving your eyes. Normally your gaze jumps across a line several times, and each jump costs time. Here, every word appears in the same spot. The bold middle letters sit dead center, so your eyes stay still and your brain does the rest. Start around 300 words per minute. Once it feels comfortable, nudge the speed up. Most people can double their pace within a few sessions. Tap the word display to pause at any time, or tap any word in the text below to jump straight to it.";
+    $('source').value = "Speed reading with a fixed focal point removes the biggest drag on reading: moving your eyes. Normally your gaze jumps across a line several times, and each jump costs time. Here, every word appears in the same spot. The bold middle letters sit dead center, so your eyes stay still and your brain does the rest. Start around 200 words per minute. Once it feels comfortable, nudge the speed up. Most people can double their pace within a few sessions. Tap the word display to pause at any time, or tap any word in the text below to jump straight to it.";
     updateCount();
   };
   function updateCount() {
