@@ -356,15 +356,20 @@
   const MAX_RATE = /iPhone|iPad|iPod/.test(navigator.userAgent) ? 2 : 3;
   let gen = 0, fallbackT = [], gotBoundary = false, cdT = 0;
   // Natural voice: the tiny-voca speech model running on this device (files in voice/).
-  const NAT_WPM = 165, NAT_MIN = 0.7, NAT_MAX = 2.4;
+  // Measured pace of each natural voice at speed 1 (words/min, pauses included): male ~200, female ~188.
+  const NAT_MIN = 0.6, NAT_MAX = 2.4;
+  const natBase = () => S.voice === 'nat:F2' ? 188 : 200;
+  // Match the silent reader's real pace: with smart pacing it also pauses at punctuation and long words, so its true words/min is below the setting.
+  const paceFactor = () => S.smart && words.length && prefix[words.length] ? words.length / prefix[words.length] : 1;
+  const natRaw = () => S.wpm * paceFactor() / natBase();
   const natOK = !!(window.Worker && (window.AudioContext || window.webkitAudioContext) && window.WebAssembly);
   const isNat = () => (S.voice || '').startsWith('nat:');
   const hasVoice = hasSpeech || natOK;
   const nat = { worker: null, ready: false, loading: false, failed: '', pct: 0, ctx: null, pending: new Map(), cache: new Map(), seq: 0, sources: [], plan: [], raf: 0, waiting: false, until: 0 };
-  const natSpeed = () => Math.max(NAT_MIN, Math.min(NAT_MAX, S.wpm / NAT_WPM));
+  const natSpeed = () => Math.max(NAT_MIN, Math.min(NAT_MAX, natRaw()));
   const voiceRate = () => Math.max(0.5, Math.min(MAX_RATE, S.wpm / VOICE_WPM));
   const voiceActive = () => S.voiceOn && (isNat() ? natOK : hasSpeech);
-  function effWpm() { return voiceActive() ? Math.round(isNat() ? natSpeed() * NAT_WPM : voiceRate() * VOICE_WPM) : S.wpm; }
+  function effWpm() { return voiceActive() ? Math.round(isNat() ? S.wpm * natSpeed() / natRaw() : voiceRate() * VOICE_WPM) : S.wpm; }
   function voiceNote() {
     const el = $('voiceNote');
     if (!hasVoice) { el.textContent = 'Read aloud isn\'t supported in this browser.'; return; }
@@ -372,7 +377,7 @@
       if (!natOK) { el.textContent = 'The natural voice needs a newer browser.'; return; }
       if (nat.failed) { el.textContent = 'Natural voice failed to load: ' + nat.failed; return; }
       if (nat.loading && !nat.ready) { el.textContent = `Loading natural voice… ${nat.pct}% (one-time download, about 30 MB)`; return; }
-      el.textContent = S.voiceOn && S.wpm > NAT_MAX * NAT_WPM ? `Natural voice tops out near ${Math.round(NAT_MAX * NAT_WPM)} wpm, so playback runs at that speed.` : '';
+      el.textContent = S.voiceOn && natRaw() > NAT_MAX ? `Natural voice tops out near ${Math.round(NAT_MAX * natBase() / paceFactor())} wpm, so playback runs at that speed.` : S.voiceOn && natRaw() < NAT_MIN ? `Natural voice can't go slower than about ${Math.round(NAT_MIN * natBase() / paceFactor())} wpm, so playback runs at that speed.` : '';
       return;
     }
     const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && 'ontouchend' in document);
@@ -743,7 +748,7 @@
     if (!words.length) return;
     if (!playing) { show(); return; }
     updateTime();
-    if (k === 'voiceOn' || k === 'voice' || (k === 'wpm' && voiceActive())) {
+    if (k === 'voiceOn' || k === 'voice' || ((k === 'wpm' || k === 'smart') && voiceActive())) {
       clearTimeout(restartT);
       const restart = () => { if (playing) { clearTimeout(timer); stopVoice(); voiceActive() ? speakFrom(idx) : tick(); } };
       if (k === 'wpm') restartT = setTimeout(restart, 350); else restart();
